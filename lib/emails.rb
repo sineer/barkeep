@@ -25,10 +25,9 @@ class Emails
     completed_email = CompletedEmail.new(:to => emails.join(","), :subject => subject,
         :result => "success")
 
-    user, domain = GMAIL_ADDRESS.split("@")
     pony_options = pony_options_for_commit(commit).merge({
       # Make the From: address e.g. "barkeep+requests@gmail.com" so it's easily filterable.
-      :from => "#{user}+requests@#{domain}"
+      :from => REQUESTS_OUTGOING_ADDRESS
     })
 
     begin
@@ -53,25 +52,18 @@ class Emails
     subject = subject_for_commit_email(grit_commit)
     html_body = comment_email_body(commit, comments)
 
-    to = []
-    all_previous_commenters = commit.comments.map(&:user).reject(&:demo?).reject(&:deleted?)
-    author = commit.grit_commit.author
-    user = User.find(:email => author.email)
-    to << author.email if user && !user.deleted?
-    # There shouldn't be deleted users with saved searches, but filter them out just in case.
-    cc = (users_with_saved_searches_matching(commit, :email_comments => true).reject(&:deleted?) +
-          all_previous_commenters).map(&:email).uniq
-    to += cc
-    return if to.empty?
+    all_previous_commenters = commit.comments.map(&:user).reject(&:demo?)
+    to = commit.grit_commit.author.email
+    cc = (users_with_saved_searches_matching(commit, :email_comments => true).map(&:email) +
+          all_previous_commenters.map(&:email)).uniq
 
-    completed_email = CompletedEmail.new(:to => to.join(","), :subject => subject,
+    completed_email = CompletedEmail.new(:to => ([to] + cc).join(","), :subject => subject,
         :result => "success", :comment_ids => comments.map(&:id).join(","))
 
-    user, domain = GMAIL_ADDRESS.split("@")
-    pony_options = pony_options_for_commit(commit).merge(
-      # Make the From: address e.g. "barkeep+comments@gmail.com" so it's easily filterable.
-      :from => "#{user}+comments@#{domain}"
-    )
+    pony_options = pony_options_for_commit(commit).merge({
+      :cc => cc.join(","),
+      :from => COMMENTS_OUTGOING_ADDRESS
+    })
 
     begin
       deliver_mail(to, subject, html_body, pony_options)
@@ -92,16 +84,13 @@ class Emails
     grit_commit = commit.grit_commit
     subject = subject_for_commit_email(grit_commit)
     html_body = commit_email_body(commit)
-    # Shouldn't be any saved searches for deleted users, but remove them just in case.
-    to = users_with_saved_searches_matching(commit, :email_commits => true).
-        reject(&:deleted?).map(&:email).uniq
+    to = users_with_saved_searches_matching(commit, :email_commits => true).map(&:email).uniq
 
     return if to.empty? # Sometimes... there's just nobody listening.
 
-    user, domain = GMAIL_ADDRESS.split("@")
     pony_options = pony_options_for_commit(commit).merge({
       # Make the From: address e.g. "barkeep+commits@gmail.com" so it's easily filterable.
-      :from => "#{user}+commits@#{domain}"
+      :from => COMMITS_OUTGOING_ADDRESS
     })
 
     deliver_mail(to.join(","), subject, html_body, pony_options)
@@ -148,18 +137,12 @@ class Emails
   # "message-ID" to enable threading.
   # Subject forced to utf-8 to avoid issues with mail encodings (ooyala/barkeep#285)
   def self.deliver_mail(to, subject, html_body, pony_options = {})
-    options = { :to => to, :via => :smtp, :subject => subject.force_encoding("utf-8"), :html_body => html_body,
-      # These settings are from the Pony documentation and work with Gmail's SMTP TLS server.
-      :via_options => {
-        :address => "smtp.gmail.com",
-        :port => "587",
-        :enable_starttls_auto => true,
-        :user_name => GMAIL_ADDRESS,
-        :password => GMAIL_PASSWORD,
-        :authentication => :plain,
-        # the HELO domain provided by the client to the server
-        :domain => "localhost.localdomain"
-      }
+    options = {
+      :to => to,
+      :via => :smtp,
+      :subject => subject.force_encoding("utf-8"),
+      :html_body => html_body,
+      :via_options => PONY_OPTIONS
     }
     begin
       Pony.mail(options.merge(pony_options))
